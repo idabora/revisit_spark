@@ -3,7 +3,7 @@
 ![Alt text describing the image](../images/IMG_20260121_141445338~3.jpg.jpeg)
 
 
-![Alt text describing the image](../images/IMG_20260121_141705119.jpg.jpeg)
+![Alt text describing the image](../images/IMG_20260121_141705119~2.jpg.jpeg)
 
 
 ### Why Spark exists (Problems with MapReduce)
