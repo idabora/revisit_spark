@@ -160,3 +160,127 @@ We do:
 🔥 Same logic, but 10× faster and possible to run
 
 This is distributed computing.
+
+# Spark driver — entry point, planning, and execution (concise reference)
+
+This note explains the role of the Spark driver, how it fits with SparkSession / SparkContext, and the execution lifecycle of a Spark job. It is written to improve readability and quick understanding.
+
+---
+
+## SparkSession vs SparkContext
+
+- SparkSession
+  - The unified entry point for Spark functionality (introduced in Spark 2.x).
+  - Provides a single object to interact with Spark SQL, DataFrame, Dataset, and streaming APIs.
+  - Internally manages a SparkContext and other contexts (SQLContext, HiveContext).
+
+- SparkContext
+  - The original low-level entry point (pre-Spark 2.0).
+  - Represents the connection to a Spark cluster, manages resources and coordinates task execution.
+  - Still accessible via `spark.sparkContext` when you create a SparkSession.
+
+---
+
+## How the driver is launched
+
+When you run:
+```bash
+spark-submit python job.py
+```
+Spark launches a JVM process that runs the Driver. The driver:
+- Runs your `main()` program.
+- Creates the `SparkSession` / `SparkContext`.
+- Registers the application with the cluster manager (YARN, Kubernetes, Standalone).
+- Builds the logical plan for transformations (lazy evaluation).
+
+---
+
+## Example (Python)
+```python
+df = spark.read.csv("s3://data")
+df2 = df.filter("price > 100").groupBy("category").count()
+
+# action
+df2.show()
+```
+
+---
+
+## Driver responsibilities — execution lifecycle
+
+1. Logical plan creation (lazy)
+   - Transformations build a logical DAG (no execution yet).
+
+2. Action triggers execution (driver wakes up)
+   - Example: `df2.show()` or `df.collect()`.
+
+3. Planning phase (all in driver)
+   - Logical Plan → Optimized Logical Plan
+     - Catalyst optimizer applies rules (pushdown filters, project pruning, etc.).
+   - Optimized Plan → Physical Plan
+     - Planner decides physical operators (join types, scans, etc.).
+   - Physical Plan → Stages
+     - Split the physical plan at shuffle boundaries into stages.
+
+4. Scheduling
+   - DAG Scheduler (in driver)
+     - Breaks job into stages.
+     - Determines dependencies and which stages can run in parallel.
+     - Example stages:
+       - Stage 0: Read CSV + filter
+       - Stage 1: Shuffle + aggregation
+
+5. Task creation & distribution
+   - For each stage the driver:
+     - Splits work into tasks (usually 1 task per partition).
+     - Submits serialized tasks to executors via the cluster manager.
+     - Tracks task status, failures, retries (TaskScheduler functionality).
+
+6. Communication with executors
+   - Driver sends serialized tasks.
+   - Executors run tasks and return:
+     - Task completion events
+     - Metrics
+     - Shuffle metadata
+     - Failure reports
+
+7. Result collection
+   - When you call `df.collect()`:
+     - Executors send partition results back to the driver.
+     - The driver pulls, deserializes, and holds results in its memory.
+   - Warning: `collect()` can OOM the driver if the result set is large.
+
+---
+
+## Executors — what they do
+- Executors are worker processes that run tasks.
+- They are mostly “dumb” workers: run the task given, manage task-local memory and storage, and report results and metrics to the driver.
+- Shuffle services and block managers on executors coordinate shuffle and cached data.
+
+---
+
+## Important tips & best practices
+- Avoid `collect()` on large datasets. Use `show(n)` or `take(n)` for previews.
+- Tune driver memory (e.g., `--driver-memory`) if you need to collect larger results.
+- Persist/cache intermediate datasets (`df.persist()`) to avoid recomputation.
+- Tune number of partitions to balance parallelism and task overhead.
+- Use broadcast joins for small dimension tables to avoid expensive shuffles.
+- Monitor driver logs and the Spark UI to understand stages, tasks, and bottlenecks.
+
+---
+
+## Quick checklist when debugging driver issues
+- Is the action causing a lot of data to be pulled to driver? (look for `collect`, `toLocalIterator`, `show` on full dataset)
+- Are there many small partitions or too few large partitions?
+- Are there repeated re-computations caused by missing persistence?
+- Do driver logs show OOM, long GC pauses, or scheduling delays?
+- Inspect Spark UI: DAG visualization, stage breakdowns, task metrics.
+
+---
+
+## Key takeaways
+- SparkSession is the modern unified API — it creates/owns the SparkContext (cluster connection).
+- The driver builds and optimizes the query plan, then schedules stages and tasks.
+- Executors execute tasks; the driver orchestrates and collects results — be careful with operations that pull large results into the driver.
+
+```
